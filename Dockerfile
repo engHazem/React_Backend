@@ -1,21 +1,11 @@
-FROM python:3.10-slim
+FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
 
 WORKDIR /app
-ENV PYTHONUNBUFFERED=1
 
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    libglib2.0-0 \
-    libsm6 \
-    libxrender1 \
-    libxext6 \
-    && rm -rf /var/lib/apt/lists/*
+COPY . /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
-
-COPY . .
+RUN pip install --upgrade pip
+RUN pip install -r requirements.txt
 
 EXPOSE 8000
 

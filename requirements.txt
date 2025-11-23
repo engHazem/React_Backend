@@ -1,5 +1,4 @@
 fastapi
-uvicorn
 gunicorn
 numpy
 opencv-python-headless
@@ -8,3 +7,6 @@ joblib
 pydantic
 python-multipart
 starlette
+uvicorn
+torch
+opencv-python
