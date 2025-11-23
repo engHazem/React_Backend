@@ -1,11 +1,10 @@
 fastapi
-uvicorn
-gunicorn
+uvicorn[gunicorn] 
 numpy
 opencv-python-headless
 joblib
 pydantic
 python-multipart
 starlette
-
+mediapipe
 torch --index-url https://download.pytorch.org/whl/cpu
