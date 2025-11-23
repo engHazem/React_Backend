@@ -1,0 +1,1 @@
+gunicorn -k uvicorn.workers.UvicornWorker multimodel_api:app --workers 1 --bind=0.0.0.0:8000 --timeout 300
