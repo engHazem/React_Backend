@@ -4,10 +4,10 @@ import numpy as np
 import torch
 import joblib
 import json
+import importlib    # <── NEW
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from collections import deque
-from inference import TransformerAutoencoder, analyze_frame
 
 # ==============================
 # ⚙️ FastAPI & CORS Setup
@@ -15,16 +15,12 @@ from inference import TransformerAutoencoder, analyze_frame
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # Allow all origins (development)
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ==============================
-# ⚙️ Device Setting (FORCE CPU)
-# ==============================
-# Azure App Service does NOT have GPUs
 DEVICE = "cpu"
 print(f"🔧 Running on: {DEVICE}")
 
@@ -33,23 +29,65 @@ print(f"🔧 Running on: {DEVICE}")
 # ==============================
 EXERCISE_MODELS = {
     "squat": {
-        "model_path": "models/squat_model.pth",
-        "scaler_path": "models/pose_scaler.pkl",
+        "model_path": "models/squat/squat_model.pth",
+        "scaler_path": "models/squat/squat_pose_scaler.pkl",
+        "inference_module": "models/squat/models.squat.inference.py",
         "threshold": 0.07,
         "window_size": 30,
         "num_features": 74,
         "seq_len": 30,
+    },
+    "push_ups": {
+        "model_path": "models/pushup/pushup_model.pth",
+        "scaler_path": "models/pushup/pushup_pose_scaler.pkl",
+        "inference_module": "models/pushup/models.pushup.inference.py",
+        "threshold": 0.07,
+        "window_size": 30,
+        "num_features": 74,
+        "seq_len": 30,
+    },
+    "lateral_raises": {
+        "model_path": "models/lateral_raises/lateral_raises_model.pth",
+        "scaler_path": "models/lateral_raises/lateral_raises_pose_scaler.pkl",
+        "inference_module": "models.lateral_raises.inference",
+        "threshold": 0.815,
+        "window_size": 30,
+        "num_features": 54,
+        "seq_len": 30,
+    },
+    "biceps_curl": {
+        "model_path": "models/biceps_curl/biceps_curl_model.pth",
+        "scaler_path": "models/biceps_curl/pushup_pose_scaler.pkl",
+        "inference_module": "models.biceps_curl.inference",
+        "threshold": 0.017,
+        "window_size": 30,
+        "num_features": 26,
+        "seq_len": 30,
+        "rep_state": {
+        'rep_counter': 0,
+        'prev_angle': None,
+        'prev_phase': None,
+        'phase': "B1",
+        'viable_rep': True,
+        'Top_ROM_error': False,
+        'Bottom_ROM_error': False
+        }
     }
 }
 
 # ==============================
 # 🧠 Load All Models (CPU ONLY)
 # ==============================
+
 for name, cfg in EXERCISE_MODELS.items():
     try:
+        # Load dynamic inference module
+        inference = importlib.import_module(cfg["inference_module"])
+        TransformerAutoencoder = inference.TransformerAutoencoder
+        EXERCISE_MODELS[name]["analyze_frame"] = inference.analyze_frame
+
+        # Load model
         model = TransformerAutoencoder(cfg["num_features"], cfg["seq_len"])
-        
-        # Load on CPU
         model.load_state_dict(torch.load(cfg["model_path"], map_location="cpu"))
         model.to("cpu").eval()
 
@@ -58,7 +96,7 @@ for name, cfg in EXERCISE_MODELS.items():
         EXERCISE_MODELS[name]["model"] = model
         EXERCISE_MODELS[name]["scaler"] = scaler
 
-        print(f"✅ Loaded model '{name}' on CPU successfully")
+        print(f"✅ Loaded model '{name}' + module {cfg['inference_module']}")
 
     except Exception as e:
         print(f"⚠️ Failed to load model '{name}': {e}")
@@ -81,10 +119,9 @@ async def websocket_endpoint(websocket: WebSocket):
     websocket_active = True
 
     try:
-        # ===== Model Selection =====
         init = await websocket.receive_text()
         cfg = json.loads(init)
-        model_name = cfg.get("model", "squat")
+        model_name = cfg.get("model")
 
         if model_name not in EXERCISE_MODELS:
             await websocket.send_json({"error": f"Model '{model_name}' not found"})
@@ -94,11 +131,14 @@ async def websocket_endpoint(websocket: WebSocket):
         model = model_cfg["model"]
         scaler = model_cfg["scaler"]
         threshold = model_cfg["threshold"]
+        analyze_frame = model_cfg["analyze_frame"]
         buffer = deque(maxlen=model_cfg["window_size"])
 
         print(f"🎯 Using model: {model_name}")
 
-        # ===== Main Loop =====
+        #  dynamic rep_state based on model
+        rep_state = model_cfg["rep_state"].copy()
+        
         while True:
             msg = await websocket.receive_text()
             payload = json.loads(msg)
@@ -108,7 +148,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({"error": "No frame data received"})
                 continue
 
-            # Support base64 prefix
             if "," in frame_data:
                 frame_data = frame_data.split(",", 1)[1]
 
@@ -121,7 +160,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({"error": "Invalid frame"})
                     continue
 
-                # Analyze frame on CPU
+                # 🔥 dynamic inference per model
                 result = analyze_frame(
                     frame,
                     model=model,
@@ -131,6 +170,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     buffer=buffer,
                     window_size=model_cfg["window_size"],
                     num_features=model_cfg["num_features"],
+                    rep_state=rep_state if "rep_state" in model_cfg else None
                 )
 
                 await websocket.send_json(result)
@@ -139,17 +179,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({"error": f"Processing error: {str(e)}"})
 
     except WebSocketDisconnect:
-        print("⚠️ WebSocket disconnected by client")
+        print("⚠️ WebSocket disconnected")
         websocket_active = False
-
-    except Exception as e:
-        print(f"❌ Unexpected error: {e}")
 
     finally:
         if websocket_active:
-            try:
-                await websocket.close()
-            except Exception:
-                pass
-
-        print("🔴 WebSocket closed safely ✅")
+            try: await websocket.close()
+            except: pass
+        print("🔴 WebSocket closed safely")
