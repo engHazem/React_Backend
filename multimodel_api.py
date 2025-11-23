@@ -50,10 +50,18 @@ EXERCISE_MODELS = {
         "model_path": "models/lateral_raises/lateral_raises_model.pth",
         "scaler_path": "models/lateral_raises/lateral_raises_pose_scaler.pkl",
         "inference_module": "models.lateral_raises.inference",
-        "threshold": 0.815,
+        "threshold": 0.82,
         "window_size": 30,
         "num_features": 54,
         "seq_len": 30,
+        "rep_state": { 'rep_counter': 0,
+        'prev_angle': None,
+        'prev_phase': None,
+        'phase': "LR1",
+        'viable_rep': True,
+        'Top_ROM_error': False,
+        'Bottom_ROM_error': False
+    }
     },
     "biceps_curl": {
         "model_path": "models/biceps_curl/biceps_curl_model.pth",
