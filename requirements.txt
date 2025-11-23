@@ -1,14 +1,11 @@
---index-url https://download.pytorch.org/whl/cpu
---extra-index-url https://pypi.org/simple
-
-torch==2.5.1+cpu
-torchvision==0.20.1+cpu
+--extra-index-url https://download.pytorch.org/whl/cpu
 
 fastapi
 uvicorn
 gunicorn
 numpy
 opencv-python-headless
+torch==2.9.1+cpu
 joblib
 pydantic
 python-multipart
