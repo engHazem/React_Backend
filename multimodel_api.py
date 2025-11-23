@@ -15,17 +15,22 @@ from inference import TransformerAutoencoder, analyze_frame
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # during dev: allow all origins
+    allow_origins=["*"],   # Allow all origins (development)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ==============================
-# ⚙️ Device & Model Config
+# ⚙️ Device Setting (FORCE CPU)
 # ==============================
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# Azure App Service does NOT have GPUs
+DEVICE = "cpu"
+print(f"🔧 Running on: {DEVICE}")
 
+# ==============================
+# ⚙️ Model Configurations
+# ==============================
 EXERCISE_MODELS = {
     "squat": {
         "model_path": "models/squat_model.pth",
@@ -38,17 +43,23 @@ EXERCISE_MODELS = {
 }
 
 # ==============================
-# 🧠 Load All Models
+# 🧠 Load All Models (CPU ONLY)
 # ==============================
 for name, cfg in EXERCISE_MODELS.items():
     try:
         model = TransformerAutoencoder(cfg["num_features"], cfg["seq_len"])
-        model.load_state_dict(torch.load(cfg["model_path"], map_location=DEVICE))
-        model.to(DEVICE).eval()
+        
+        # Load on CPU
+        model.load_state_dict(torch.load(cfg["model_path"], map_location="cpu"))
+        model.to("cpu").eval()
+
         scaler = joblib.load(cfg["scaler_path"])
+
         EXERCISE_MODELS[name]["model"] = model
         EXERCISE_MODELS[name]["scaler"] = scaler
-        print(f"✅ Loaded model '{name}' successfully.")
+
+        print(f"✅ Loaded model '{name}' on CPU successfully")
+
     except Exception as e:
         print(f"⚠️ Failed to load model '{name}': {e}")
 
@@ -59,7 +70,6 @@ for name, cfg in EXERCISE_MODELS.items():
 async def root():
     return {"message": "Backend running successfully 🚀"}
 
-
 # ==============================
 # 🔄 WebSocket Endpoint
 # ==============================
@@ -68,7 +78,7 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     print("🟢 WebSocket connected")
 
-    websocket_active = True  # flag to prevent double close
+    websocket_active = True
 
     try:
         # ===== Model Selection =====
@@ -98,7 +108,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({"error": "No frame data received"})
                 continue
 
-            # Remove base64 header if exists
+            # Support base64 prefix
             if "," in frame_data:
                 frame_data = frame_data.split(",", 1)[1]
 
@@ -111,13 +121,13 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({"error": "Invalid frame"})
                     continue
 
-                # Analyze frame
+                # Analyze frame on CPU
                 result = analyze_frame(
                     frame,
                     model=model,
                     scaler=scaler,
                     threshold=threshold,
-                    device=DEVICE,
+                    device="cpu",
                     buffer=buffer,
                     window_size=model_cfg["window_size"],
                     num_features=model_cfg["num_features"],
@@ -131,12 +141,15 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         print("⚠️ WebSocket disconnected by client")
         websocket_active = False
+
     except Exception as e:
         print(f"❌ Unexpected error: {e}")
+
     finally:
         if websocket_active:
             try:
                 await websocket.close()
             except Exception:
                 pass
+
         print("🔴 WebSocket closed safely ✅")

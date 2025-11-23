@@ -1,1 +1,1 @@
-pip install torch==2.5.1+cpu torchvision==0.20.1+cpu --index-url https://download.pytorch.org/whl/cpu && gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:app
+gunicorn -k uvicorn.workers.UvicornWorker multimodel_api:app --workers 1 --bind=0.0.0.0:8000 --timeout 300
