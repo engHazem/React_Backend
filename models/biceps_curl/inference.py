@@ -119,16 +119,9 @@ def extract_angles_from_landmarks(landmarks_dict):
 # ===============================
 # 🧠 Inference Function
 # ===============================
-mp_pose = mp.solutions.pose
-pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+def analyze_frame(landmarks, model, scaler, threshold, device, buffer, window_size, num_features,rep_state):
 
-
-def analyze_frame(frame, model, scaler, threshold, device, buffer, window_size, num_features,rep_state):
-    
-    image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = pose.process(image_rgb)
-
-    if not results.pose_landmarks:
+    if landmarks is None or len(landmarks) == 0:
         buffer.append([0.0] * num_features)
         return {
             "form_status": "No Pose Detected", 
@@ -137,11 +130,19 @@ def analyze_frame(frame, model, scaler, threshold, device, buffer, window_size, 
 
     # Extract landmarks
     landmarks_dict = {}
-    for name, idx in LANDMARK_INDICES.items():
-        lm = results.pose_landmarks.landmark[idx]
-        landmarks_dict[f"{name}_x"] = lm.x
-        landmarks_dict[f"{name}_y"] = lm.y
-        landmarks_dict[f"{name}_visibility"] = lm.visibility
+    try:
+        for name, idx in LANDMARK_INDICES.items():
+            lm = landmarks[idx]
+            landmarks_dict[f"{name}_x"] = lm["x"]
+            landmarks_dict[f"{name}_y"] = lm["y"]
+            landmarks_dict[f"{name}_visibility"] = lm.get("visibility", 1.0)
+    except Exception as e:
+        print("Landmark parsing error:", e)
+        buffer.append([0.0] * num_features)
+        return {
+            "form_status": "Invalid landmark data",
+            "rep_state": rep_state
+        }
 
     # Get angles and active arm
     angles = extract_angles_from_landmarks(landmarks_dict)
@@ -244,7 +245,8 @@ def analyze_frame(frame, model, scaler, threshold, device, buffer, window_size, 
 
         return {
             "form_status": status, 
-        "rep_state": rep_state
+            "reconstruction_error": err,
+            "rep_state": rep_state
         }
 
     return {

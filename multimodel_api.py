@@ -166,41 +166,26 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             msg = await websocket.receive_text()
             payload = json.loads(msg)
-            frame_data = payload.get("frame")
 
-            if not frame_data:
-                await websocket.send_json({"error": "No frame data received"})
+            landmarks = payload.get("landmarks")
+
+            if landmarks is None:
+                await websocket.send_json({"error": "No landmarks received"})
                 continue
 
-            if "," in frame_data:
-                frame_data = frame_data.split(",", 1)[1]
+            result = analyze_frame(
+                landmarks,
+                model=model,
+                scaler=scaler,
+                threshold=threshold,
+                device="cpu",
+                buffer=buffer,
+                window_size=model_cfg["window_size"],
+                num_features=model_cfg["num_features"],
+                rep_state=rep_state
+            )
 
-            try:
-                frame_bytes = base64.b64decode(frame_data)
-                np_arr = np.frombuffer(frame_bytes, np.uint8)
-                frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-
-                if frame is None:
-                    await websocket.send_json({"error": "Invalid frame"})
-                    continue
-
-                # 🔥 dynamic inference per model
-                result = analyze_frame(
-                    frame,
-                    model=model,
-                    scaler=scaler,
-                    threshold=threshold,
-                    device="cpu",
-                    buffer=buffer,
-                    window_size=model_cfg["window_size"],
-                    num_features=model_cfg["num_features"],
-                    rep_state=rep_state if "rep_state" in model_cfg else None
-                )
-
-                await websocket.send_json(result)
-
-            except Exception as e:
-                await websocket.send_json({"error": f"Processing error: {str(e)}"})
+            await websocket.send_json(result)
 
     except WebSocketDisconnect:
         print("⚠️ WebSocket disconnected")
