@@ -1,5 +1,6 @@
 fastapi
-uvicorn[gunicorn] 
+uvicorn[standard]
+gunicorn
 numpy
 opencv-python-headless
 joblib
