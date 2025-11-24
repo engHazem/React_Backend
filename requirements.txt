@@ -8,4 +8,5 @@ pydantic
 python-multipart
 starlette
 mediapipe
+scikit-learn
 torch --index-url https://download.pytorch.org/whl/cpu

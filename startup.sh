@@ -1,7 +1,7 @@
 
 #!/bin/bash
 set -e
-
+LISTEN_PORT=${PORT:-8080}
 echo "=========================================="
 echo "🚀 Starting AI Backend API"
 echo "=========================================="
@@ -44,7 +44,7 @@ echo "=========================================="
 exec gunicorn multimodel_api:app \
   --workers 1 \
   --worker-class uvicorn.workers.UvicornWorker \
-  --bind 0.0.0.0:8000 \
+  --bind 0.0.0.0:${LISTEN_PORT} \
   --timeout 600 \
   --log-level info \
   --access-logfile - \
