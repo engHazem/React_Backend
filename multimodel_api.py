@@ -31,11 +31,19 @@ EXERCISE_MODELS = {
     "squat": {
         "model_path": "models/squat/squat_model.pth",
         "scaler_path": "models/squat/squat_pose_scaler.pkl",
-        "inference_module": "models/squat/models.squat.inference.py",
-        "threshold": 0.07,
+        "inference_module": "models.squat.inference",
+        "threshold": 0.032,
         "window_size": 30,
-        "num_features": 74,
+        "num_features": 22,
         "seq_len": 30,
+        "rep_state": {
+        'rep_counter': 0,
+        'prev_angle': None,
+        'prev_phase': None,
+        'phase': "S1",
+        'viable_rep': True,
+        'Bottom_ROM_error': False
+    }
     },
     "push_ups": {
         "model_path": "models/pushup/pushup_model.pth",
