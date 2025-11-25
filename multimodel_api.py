@@ -33,9 +33,9 @@ EXERCISE_MODELS = {
         "scaler_path": "models/squat/squat_pose_scaler.pkl",
         "inference_module": "models.squat.inference",
         "threshold": 0.032,
-        "window_size": 30,
+        "window_size": 10,
         "num_features": 22,
-        "seq_len": 30,
+        "seq_len": 10,
         "rep_state": {
         'rep_counter': 0,
         'prev_angle': None,
@@ -50,9 +50,9 @@ EXERCISE_MODELS = {
         "scaler_path": "models/pushup/pushup_pose_scaler.pkl",
         "inference_module": "models.pushup.inference",
         "threshold": 0.11,
-        "window_size": 30,
+        "window_size": 10,
         "num_features": 40,
-        "seq_len": 30,
+        "seq_len": 10,
         "rep_state": { 'rep_counter': 0,
         'prev_angle': None,
         'prev_phase': None,
@@ -67,9 +67,9 @@ EXERCISE_MODELS = {
         "scaler_path": "models/lateral_raises/lateral_raises_pose_scaler.pkl",
         "inference_module": "models.lateral_raises.inference",
         "threshold": 0.84,
-        "window_size": 30,
+        "window_size": 10,
         "num_features": 54,
-        "seq_len": 30,
+        "seq_len": 10,
         "rep_state": { 'rep_counter': 0,
         'prev_angle': None,
         'prev_phase': None,
@@ -81,12 +81,12 @@ EXERCISE_MODELS = {
     },
     "biceps_curl": {
         "model_path": "models/biceps_curl/biceps_curl_model.pth",
-        "scaler_path": "models/biceps_curl/pushup_pose_scaler.pkl",
+        "scaler_path": "models/biceps_curl/biceps_pose_scaler.pkl",
         "inference_module": "models.biceps_curl.inference",
         "threshold": 0.017,
-        "window_size": 30,
+        "window_size": 10,
         "num_features": 26,
-        "seq_len": 30,
+        "seq_len": 10,
         "rep_state": {
         'rep_counter': 0,
         'prev_angle': None,
@@ -166,26 +166,41 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             msg = await websocket.receive_text()
             payload = json.loads(msg)
+            frame_data = payload.get("frame")
 
-            landmarks = payload.get("landmarks")
-
-            if landmarks is None:
-                await websocket.send_json({"error": "No landmarks received"})
+            if not frame_data:
+                await websocket.send_json({"error": "No frame data received"})
                 continue
 
-            result = analyze_frame(
-                landmarks,
-                model=model,
-                scaler=scaler,
-                threshold=threshold,
-                device="cpu",
-                buffer=buffer,
-                window_size=model_cfg["window_size"],
-                num_features=model_cfg["num_features"],
-                rep_state=rep_state
-            )
+            if "," in frame_data:
+                frame_data = frame_data.split(",", 1)[1]
 
-            await websocket.send_json(result)
+            try:
+                frame_bytes = base64.b64decode(frame_data)
+                np_arr = np.frombuffer(frame_bytes, np.uint8)
+                frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+                if frame is None:
+                    await websocket.send_json({"error": "Invalid frame"})
+                    continue
+
+                # 🔥 dynamic inference per model
+                result = analyze_frame(
+                    frame,
+                    model=model,
+                    scaler=scaler,
+                    threshold=threshold,
+                    device="cpu",
+                    buffer=buffer,
+                    window_size=model_cfg["window_size"],
+                    num_features=model_cfg["num_features"],
+                    rep_state=rep_state if "rep_state" in model_cfg else None
+                )
+
+                await websocket.send_json(result)
+
+            except Exception as e:
+                await websocket.send_json({"error": f"Processing error: {str(e)}"})
 
     except WebSocketDisconnect:
         print("⚠️ WebSocket disconnected")

@@ -52,10 +52,10 @@ LANDMARK_NAMES = [
 ]
 
 LEFT_LANDMARKS  = [
- 'LEFT_SHOULDER',  'LEFT_ELBOW', 'LEFT_WRIST',  'LEFT_PINKY', 'LEFT_INDEX', 'LEFT_THUMB','LEFT_HIP', 'LEFT_KNEE','LEFT_ANKLE','LEFT_FOOT','LEFT_HEEL'
+ 'LEFT_SHOULDER',  'LEFT_ELBOW', 'LEFT_WRIST',  'LEFT_PINKY', 'LEFT_INDEX', 'LEFT_THUMB','LEFT_HIP', 'LEFT_KNEE','LEFT_ANKLE','LEFT_FOOT_INDEX','LEFT_HEEL'
  ]
 
-RIGHT_LANDMARKS =  ['RIGHT_SHOULDER',  'RIGHT_ELBOW','RIGHT_WRIST',  'RIGHT_PINKY','RIGHT_INDEX',  'RIGHT_THUMB','RIGHT_HIP', 'RIGHT_KNEE','RIGHT_ANKLE','RIGHT_FOOT','RIGHT_HEEL']
+RIGHT_LANDMARKS =  ['RIGHT_SHOULDER',  'RIGHT_ELBOW','RIGHT_WRIST',  'RIGHT_PINKY','RIGHT_INDEX',  'RIGHT_THUMB','RIGHT_HIP', 'RIGHT_KNEE','RIGHT_ANKLE','RIGHT_FOOT_INDEX','RIGHT_HEEL']
 
 
 
@@ -132,9 +132,15 @@ def extract_angles_from_landmarks(landmarks_dict):
 # ===============================
 # 🧠 Inference Function
 # ===============================
-def analyze_frame(landmarks, model, scaler, threshold, device, buffer, window_size, num_features,rep_state):
+mp_pose = mp.solutions.pose
+pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
-    if landmarks is None or len(landmarks) == 0:
+def analyze_frame(frame, model, scaler, threshold, device, buffer, window_size, num_features, rep_state):
+   
+    image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = pose.process(image_rgb)
+
+    if not results.pose_landmarks:
         buffer.append([0.0] * num_features)
         return {
             "form_status": "No Pose Detected", 
@@ -143,19 +149,11 @@ def analyze_frame(landmarks, model, scaler, threshold, device, buffer, window_si
 
     # Extract landmarks
     landmarks_dict = {}
-    try:
-        for name, idx in LANDMARK_INDICES.items():
-            lm = landmarks[idx]
-            landmarks_dict[f"{name}_x"] = lm["x"]
-            landmarks_dict[f"{name}_y"] = lm["y"]
-            landmarks_dict[f"{name}_visibility"] = lm.get("visibility", 1.0)
-    except Exception as e:
-        print("Landmark parsing error:", e)
-        buffer.append([0.0] * num_features)
-        return {
-            "form_status": "Invalid landmark data",
-            "rep_state": rep_state
-        }
+    for name, idx in LANDMARK_INDICES.items():
+        lm = results.pose_landmarks.landmark[idx]
+        landmarks_dict[f"{name}_x"] = lm.x
+        landmarks_dict[f"{name}_y"] = lm.y
+        landmarks_dict[f"{name}_visibility"] = lm.visibility
 
     # Get angles and active arm
     angles = extract_angles_from_landmarks(landmarks_dict)
