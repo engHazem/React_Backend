@@ -37,14 +37,16 @@ EXERCISE_MODELS = {
         "num_features": 22,
         "seq_len": 10,
         "rep_state": {
-        'rep_counter': 0,
-        'prev_angle': None,
-        'prev_phase': None,
-        'phase': "S1",
-        'viable_rep': True,
-        'Bottom_ROM_error': False
-    }
+            'rep_counter': 0,
+            'prev_angle': None,
+            'prev_phase': None,
+            'phase': "S1",
+            'viable_rep': True,
+            'Bottom_ROM_error': False
+        },
+        "loaded": False  # <-- REQUIRED
     },
+
     "push_ups": {
         "model_path": "models/pushup/pushup_model.pth",
         "scaler_path": "models/pushup/pushup_pose_scaler.pkl",
@@ -53,15 +55,18 @@ EXERCISE_MODELS = {
         "window_size": 10,
         "num_features": 40,
         "seq_len": 10,
-        "rep_state": { 'rep_counter': 0,
-        'prev_angle': None,
-        'prev_phase': None,
-        'phase': "P1",
-        'viable_rep': True,
-        'Top_ROM_error': False,
-        'Bottom_ROM_error': False
-    }
+        "rep_state": {
+            'rep_counter': 0,
+            'prev_angle': None,
+            'prev_phase': None,
+            'phase': "P1",
+            'viable_rep': True,
+            'Top_ROM_error': False,
+            'Bottom_ROM_error': False
+        },
+        "loaded": False
     },
+
     "lateral_raises": {
         "model_path": "models/lateral_raises/lateral_raises_model.pth",
         "scaler_path": "models/lateral_raises/lateral_raises_pose_scaler.pkl",
@@ -70,15 +75,18 @@ EXERCISE_MODELS = {
         "window_size": 10,
         "num_features": 54,
         "seq_len": 10,
-        "rep_state": { 'rep_counter': 0,
-        'prev_angle': None,
-        'prev_phase': None,
-        'phase': "LR1",
-        'viable_rep': True,
-        'Top_ROM_error': False,
-        'Bottom_ROM_error': False
-    }
+        "rep_state": {
+            'rep_counter': 0,
+            'prev_angle': None,
+            'prev_phase': None,
+            'phase': "LR1",
+            'viable_rep': True,
+            'Top_ROM_error': False,
+            'Bottom_ROM_error': False
+        },
+        "loaded": False
     },
+
     "biceps_curl": {
         "model_path": "models/biceps_curl/biceps_curl_model.pth",
         "scaler_path": "models/biceps_curl/biceps_pose_scaler.pkl",
@@ -88,42 +96,49 @@ EXERCISE_MODELS = {
         "num_features": 26,
         "seq_len": 10,
         "rep_state": {
-        'rep_counter': 0,
-        'prev_angle': None,
-        'prev_phase': None,
-        'phase': "B1",
-        'viable_rep': True,
-        'Top_ROM_error': False,
-        'Bottom_ROM_error': False
-        }
+            'rep_counter': 0,
+            'prev_angle': None,
+            'prev_phase': None,
+            'phase': "B1",
+            'viable_rep': True,
+            'Top_ROM_error': False,
+            'Bottom_ROM_error': False
+        },
+        "loaded": False
     }
 }
+
 
 # ==============================
 # 🧠 Load All Models (CPU ONLY)
 # ==============================
 
-for name, cfg in EXERCISE_MODELS.items():
-    try:
-        # Load dynamic inference module
-        inference = importlib.import_module(cfg["inference_module"])
-        TransformerAutoencoder = inference.TransformerAutoencoder
-        EXERCISE_MODELS[name]["analyze_frame"] = inference.analyze_frame
+def load_model_if_needed(model_cfg):
+    if model_cfg["loaded"]:
+        return  # already loaded
 
-        # Load model
-        model = TransformerAutoencoder(cfg["num_features"], cfg["seq_len"])
-        model.load_state_dict(torch.load(cfg["model_path"], map_location="cpu"))
-        model.to("cpu").eval()
+    print(f"⏳ Lazy loading model: {model_cfg}")
 
-        scaler = joblib.load(cfg["scaler_path"])
+    # 1. Load dynamic inference module
+    inference = importlib.import_module(model_cfg["inference_module"])
+    model_cfg["analyze_frame"] = inference.analyze_frame
+    TransformerAutoencoder = inference.TransformerAutoencoder
 
-        EXERCISE_MODELS[name]["model"] = model
-        EXERCISE_MODELS[name]["scaler"] = scaler
+    # 2. Load the model
+    model = TransformerAutoencoder(model_cfg["num_features"], model_cfg["seq_len"])
+    model.load_state_dict(torch.load(model_cfg["model_path"], map_location="cpu"))
+    model.eval()
+    model.to("cpu")
 
-        print(f"✅ Loaded model '{name}' + module {cfg['inference_module']}")
+    # 3. Load scaler
+    scaler = joblib.load(model_cfg["scaler_path"])
 
-    except Exception as e:
-        print(f"⚠️ Failed to load model '{name}': {e}")
+    # 4. Store
+    model_cfg["model"] = model
+    model_cfg["scaler"] = scaler
+    model_cfg["loaded"] = True  # mark as loaded
+
+    print(f"✅ Model loaded successfully: {model_cfg}")
 
 # ==============================
 # 🏠 Root Route
@@ -152,8 +167,12 @@ async def websocket_endpoint(websocket: WebSocket):
             return
 
         model_cfg = EXERCISE_MODELS[model_name]
+       # 🔥 Load the model ONLY when needed
+        load_model_if_needed(model_cfg)
+
         model = model_cfg["model"]
         scaler = model_cfg["scaler"]
+
         threshold = model_cfg["threshold"]
         analyze_frame = model_cfg["analyze_frame"]
         buffer = deque(maxlen=model_cfg["window_size"])
