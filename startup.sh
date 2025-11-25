@@ -49,6 +49,4 @@ exec uvicorn multimodel_api:app \
   --workers 1 \
   --loop uvloop \
   --http httptools \
-  --ws ping-interval 20 \
-  --ws ping-timeout 20 \
   --timeout-keep-alive 45
