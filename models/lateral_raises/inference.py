@@ -1,46 +1,28 @@
+# models/lateral_raises/inference.py
 import cv2
-import torch
 import numpy as np
 import mediapipe as mp
 import joblib
-import torch.nn as nn
+import onnxruntime as ort
 
 # ===============================
-# ⚙️ Model Definition
-# ===============================
-class TransformerAutoencoder(nn.Module):
-    def __init__(self, num_features, seq_len, d_model=128, nhead=8, num_layers=6):
-        super().__init__()
-        self.seq_len = seq_len
-        self.input_proj = nn.Linear(num_features, d_model)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True)
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        decoder_layer = nn.TransformerDecoderLayer(d_model=d_model, nhead=nhead, batch_first=True)
-        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
-        self.output_proj = nn.Linear(d_model, num_features)
-
-    def forward(self, x):
-        z = self.input_proj(x)
-        memory = self.encoder(z)
-        reconstructed = self.decoder(z, memory)
-        recon_out = self.output_proj(reconstructed)
-        return recon_out
-
-
-# ===============================
-# 📐 Helper Functions
+# 📐 Angle Calculation
 # ===============================
 def calculate_angle(a, b, c):
-    a, b, c = np.array(a), np.array(b), np.array(c)
+    a, b, c = np.array(a, dtype=np.float32), np.array(b, dtype=np.float32), np.array(c, dtype=np.float32)
     ba, bc = a - b, c - b
     dot = np.dot(ba, bc)
-    norm_ba, norm_bc = np.linalg.norm(ba), np.linalg.norm(bc)
+    norm_ba = np.linalg.norm(ba)
+    norm_bc = np.linalg.norm(bc)
     if norm_ba == 0 or norm_bc == 0:
         return 0.0
-    cosine = np.clip(dot / (norm_ba * norm_bc), -1.0, 1.0)
-    return np.degrees(np.arccos(cosine))
+    cos_angle = np.clip(dot / (norm_ba * norm_bc), -1.0, 1.0)
+    return float(np.degrees(np.arccos(cos_angle)))
 
-# MediaPipe Landmark Mapping (Upper Body Only)
+
+# ===============================
+# 📍 MediaPipe Landmarks & Lists
+# ===============================
 LANDMARK_NAMES = [
     'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
     'LEFT_WRIST', 'RIGHT_WRIST', 'LEFT_PINKY', 'RIGHT_PINKY',
@@ -55,6 +37,177 @@ LANDMARK_INDICES = {
     'LEFT_HIP': 23, 'RIGHT_HIP': 24
 }
 
+LEFT_LANDMARKS = [
+    'LEFT_SHOULDER', 'LEFT_ELBOW', 'LEFT_WRIST',
+    'LEFT_PINKY', 'LEFT_INDEX', 'LEFT_THUMB', 'LEFT_HIP'
+]
+
+RIGHT_LANDMARKS = [
+    'RIGHT_SHOULDER', 'RIGHT_ELBOW', 'RIGHT_WRIST',
+    'RIGHT_PINKY', 'RIGHT_INDEX', 'RIGHT_THUMB', 'RIGHT_HIP'
+]
+
+
+# ===============================
+# 🧠 MediaPipe Pose (shared)
+# ===============================
+mp_pose = mp.solutions.pose
+pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+
+
+# ===============================
+# 🔥 ONNX Inference Function
+# ===============================
+def analyze_frame(frame, session, scaler, threshold, buffer, window_size, num_features, rep_state):
+    """
+    frame: BGR OpenCV image
+    session: onnxruntime.InferenceSession for lateral_raises_model.onnx
+    scaler: pretrained scaler (joblib) matching num_features
+    threshold: reconstruction error threshold
+    buffer: deque(maxlen=window_size) holding feature vectors
+    window_size: seq length
+    num_features: expected feature vector length
+    rep_state: dict tracking rep state (will be mutated)
+    """
+
+    # convert to RGB for MediaPipe
+    image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = pose.process(image_rgb)
+
+    if not results.pose_landmarks:
+        buffer.append([0.0] * num_features)
+        return {"form_status": "No Pose Detected", "rep_state": rep_state}
+
+    # Extract landmarks into dict (floats)
+    landmarks_dict = {}
+    for name, idx in LANDMARK_INDICES.items():
+        lm = results.pose_landmarks.landmark[idx]
+        landmarks_dict[f"{name}_x"] = float(lm.x)
+        landmarks_dict[f"{name}_y"] = float(lm.y)
+        landmarks_dict[f"{name}_visibility"] = float(lm.visibility)
+
+    # Build feature vector from landmarks (14 * 3 = 42) then append angles (12)
+    feature_vector = []
+    for name in LANDMARK_NAMES:
+        feature_vector.extend([
+            landmarks_dict.get(f"{name}_x", 0.0),
+            landmarks_dict.get(f"{name}_y", 0.0),
+            landmarks_dict.get(f"{name}_visibility", 0.0)
+        ])
+
+    # Compute angles and related features
+    angles = extract_angles_from_landmarks(landmarks_dict)
+    # angles returns 12 values:
+    # [left_shoulder_angle, right_shoulder_angle, left_elbow_angle, right_elbow_angle,
+    #  left_torso_angle, right_torso_angle, left_shoulder_elevation, right_shoulder_elevation,
+    #  left_wrist_angle, right_wrist_angle, left_arm_drift, right_arm_drift]
+    feature_vector.extend(angles)
+
+    # Calculate average shoulder angle (for rep counting)
+    left_shoulder_angle = angles[0]
+    right_shoulder_angle = angles[1]
+    angle = (left_shoulder_angle + right_shoulder_angle) / 2.0
+
+    # Validate feature length
+    if len(feature_vector) == num_features:
+        buffer.append(feature_vector)
+    else:
+        # If mismatch, log and pad zero vector (prevents crash)
+        print(f"Warning: Feature mismatch. Expected {num_features}, got {len(feature_vector)}")
+        buffer.append([0.0] * num_features)
+
+    # ---------- Rep counting logic (lateral raises) ----------
+    if angle is not None:
+        if rep_state.get("prev_angle") is None:
+            rep_state["prev_angle"] = angle
+
+        prev_angle = rep_state.get("prev_angle", angle)
+        prev_phase = rep_state.get("prev_phase")
+
+        # Phase detection thresholds (preserve your behavior)
+        if angle <= 30 and prev_angle > 30:
+            rep_state["Top_ROM_error"] = False
+            rep_state["Bottom_ROM_error"] = False
+            rep_state["phase"] = "LR1"  # Rest
+        elif angle >= 75:
+            rep_state["phase"] = "LR3"  # Top
+        elif angle > prev_angle and angle < 75 and angle > 30:
+            rep_state["phase"] = "LR2"  # Going up
+        elif angle < prev_angle and angle < 75 and angle > 30:
+            rep_state["phase"] = "LR4"  # Going down
+
+        # ROM checks (same logic)
+        if prev_phase is not None:
+            if rep_state["phase"] == "LR4" and prev_phase == "LR2":
+                rep_state["viable_rep"] = False
+                rep_state["Top_ROM_error"] = True
+        if rep_state["phase"] == "LR2" and prev_phase == "LR4":
+            rep_state["viable_rep"] = False
+            rep_state["Bottom_ROM_error"] = True
+
+        # Rep count detection (down -> rest)
+        if prev_phase == "LR4" and rep_state["phase"] == "LR1":
+            if rep_state.get("viable_rep", True):
+                rep_state["rep_counter"] = rep_state.get("rep_counter", 0) + 1
+            rep_state["viable_rep"] = True
+
+        rep_state["prev_phase"] = rep_state["phase"]
+        rep_state["prev_angle"] = angle
+
+    # ---------- Run ONNX when buffer full ----------
+    if len(buffer) >= window_size:
+        window = np.array(list(buffer), dtype=np.float32)  # shape (window_size, features)
+        try:
+            scaled = scaler.transform(window)
+        except Exception as e:
+            return {"form_status": f"Scaler Error: {e}", "rep_state": rep_state}
+
+        # ONNX expects (batch, seq_len, features)
+        onnx_input = scaled[np.newaxis, :, :].astype(np.float32)
+
+        # Prepare input name (robust)
+        input_name = session.get_inputs()[0].name
+        ort_inputs = {input_name: onnx_input}
+        ort_outs = session.run(None, ort_inputs)
+        recon = ort_outs[0]  # expected shape (1, seq_len, features)
+
+        # compute reconstruction MSE
+        err = float(np.mean((onnx_input - recon) ** 2))
+
+        # Decide form status (preserve your messages)
+        if err > threshold:
+            rep_state["viable_rep"] = False
+            status = "POOR FORM!"
+        elif rep_state.get("Top_ROM_error"):
+            status = "Raise elbows higher!"
+        elif rep_state.get("Bottom_ROM_error"):
+            status = "Relax arms at the end!"
+        # Wrist vs elbow check when angle high
+        elif angle > 45:
+            # note: y smaller => higher in image coordinates
+            right_wrist_higher = landmarks_dict.get("RIGHT_WRIST_y", 1.0) < landmarks_dict.get("RIGHT_ELBOW_y", 1.0)
+            left_wrist_higher = landmarks_dict.get("LEFT_WRIST_y", 1.0) < landmarks_dict.get("LEFT_ELBOW_y", 1.0)
+            if right_wrist_higher or left_wrist_higher:
+                rep_state["viable_rep"] = False
+                status = "Wrist higher than elbow!"
+            else:
+                status = "Good Form"
+        else:
+            status = "Good Form"
+
+        return {
+            "form_status": status,
+            "reconstruction_error": err,
+            "rep_state": rep_state
+        }
+
+    # Buffer not full yet
+    return {"form_status": "Analyzing...", "rep_state": rep_state}
+
+
+# ===============================
+# Helper: extract_angles_from_landmarks (kept from your file)
+# ===============================
 def extract_angles_from_landmarks(landmarks_dict):
     # --- Left landmarks ---
     left_shoulder = [landmarks_dict['LEFT_SHOULDER_x'], landmarks_dict['LEFT_SHOULDER_y']]
@@ -113,141 +266,12 @@ def extract_angles_from_landmarks(landmarks_dict):
         right_arm_drift
     ]
 
-mp_pose = mp.solutions.pose
-pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
-def analyze_frame(frame, model, scaler, threshold, device, buffer, window_size, num_features,rep_state):
-    image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = pose.process(image_rgb)
-
-    if not results.pose_landmarks:
-        buffer.append([0.0] * num_features)
-        return {
-            "form_status": "No Pose Detected", 
-            "rep_state": rep_state
-        }
-
-    # Extract landmarks
-    landmarks_dict = {}
-    for name, idx in LANDMARK_INDICES.items():
-        lm = results.pose_landmarks.landmark[idx]
-        landmarks_dict[f"{name}_x"] = lm.x
-        landmarks_dict[f"{name}_y"] = lm.y
-        landmarks_dict[f"{name}_visibility"] = lm.visibility
-
-    # Build feature vector (14 landmarks × 3 = 42)
-    feature_vector = []
-    for name in LANDMARK_NAMES:
-        feature_vector.extend([
-            landmarks_dict[f'{name}_x'],
-            landmarks_dict[f'{name}_y'],
-            landmarks_dict[f'{name}_visibility']
-        ])
-
-    # Get angles and add to feature vector
-    angles = extract_angles_from_landmarks(landmarks_dict)
-    feature_vector.extend(angles)
-
-    # Calculate average shoulder angle for rep counting
-    angle = (angles[0] + angles[1]) / 2  # Average of left and right shoulder angles
-
-    # Append to buffer
-    if len(feature_vector) == num_features:
-        buffer.append(feature_vector)
-    else:
-        print(f"Warning: Feature mismatch. Expected {num_features}, got {len(feature_vector)}")
-        buffer.append([0.0] * num_features)
-
-    # Rep counting logic based on shoulder angle
-    if angle is not None:
-        if rep_state['prev_angle'] is None:
-            rep_state['prev_angle'] = angle
-
-        # Phase detection for lateral raises
-        if angle <= 30 and rep_state['prev_angle'] > 30:
-            rep_state['Top_ROM_error'] = False
-            rep_state['Bottom_ROM_error'] = False
-            rep_state['phase'] = "LR1"  # Rest position (arms down)
-        elif angle >= 75:
-            rep_state['phase'] = "LR3"  # Top position (arms raised)
-        elif angle > rep_state['prev_angle'] and angle < 75 and angle > 30:
-            rep_state['phase'] = "LR2"  # Going up (raising arms)
-        elif angle < rep_state['prev_angle'] and angle < 75 and angle > 30:
-            rep_state['phase'] = "LR4"  # Going down (lowering arms)
-
-        # Range of Motion Checks
-        # 1) Check for incomplete range at top (didn't raise high enough)
-        if rep_state['prev_phase'] is not None:
-            if rep_state['phase'] == "LR4" and rep_state['prev_phase'] == "LR2":
-                rep_state['viable_rep'] = False
-                rep_state['Top_ROM_error'] = True
-
-        # 2) Check for incomplete range at bottom (didn't lower enough)
-        if rep_state['phase'] == "LR2" and rep_state['prev_phase'] == "LR4":
-            rep_state['viable_rep'] = False
-            rep_state['Bottom_ROM_error'] = True
-
-        # Rep detection (Going down → Rest)
-        if rep_state['prev_phase'] == "LR4" and rep_state['phase'] == "LR1":
-            if rep_state['viable_rep']:
-                rep_state['rep_counter'] += 1
-            rep_state['viable_rep'] = True
-
-        rep_state['prev_phase'] = rep_state['phase']
-        rep_state['prev_angle'] = angle
-
-    # Only analyze when buffer is full
-    if len(buffer) >= window_size:
-        window = np.array(list(buffer), dtype=np.float32)
-
-        try:
-            scaled = scaler.transform(window)
-        except Exception as e:
-            return {
-                "form_status": f"Scaler Error: {e}", 
-                "rep_state": rep_state
-            }
-
-        tensor = torch.tensor(scaled, dtype=torch.float32).unsqueeze(0).to(device)
-
-        with torch.no_grad():
-            recon = model(tensor)
-            err = torch.mean((tensor - recon) ** 2).item()
-
-        # Determine form status based on reconstruction error and specific form checks
-        if err > threshold:
-            rep_state['viable_rep'] = False
-            status = "POOR FORM!"
-        elif rep_state['Top_ROM_error']:
-            status = "Raise elbows higher!"
-        elif rep_state['Bottom_ROM_error']:
-            status = "Relax arms at the end!"
-        # Check if wrist is higher than elbow during the raise
-        elif angle > 45:
-            if (landmarks_dict['RIGHT_WRIST_y'] < landmarks_dict['RIGHT_ELBOW_y'] or 
-                landmarks_dict['LEFT_WRIST_y'] < landmarks_dict['LEFT_ELBOW_y']):
-                rep_state['viable_rep'] = False
-                status = "Wrist higher than elbow!"
-            else:
-                status = "Good Form"
-        else:
-            status = "Good Form"
-
-        return {
-            "form_status": status, 
-            "rep_state": rep_state
-        }
-
-    return {
-        "form_status": "Analyzing...", 
-        "rep_state": rep_state
-    }
-
-
+# ===============================
+# Reset rep counter utility
+# ===============================
 def reset_rep_counter():
-    """Call this function to reset the rep counter (e.g., at start of new set)"""
-    global rep_state
-    rep_state = {
+    return {
         'rep_counter': 0,
         'prev_angle': None,
         'prev_phase': None,

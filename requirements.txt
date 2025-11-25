@@ -1,12 +1,19 @@
 fastapi
 uvicorn[standard]
 gunicorn
+
 numpy
-opencv-python-headless
+opencv-python-headless==4.7.0.72
+mediapipe==0.10.11
+
 joblib
+scikit-learn
+
+onnxruntime==1.20.0
+
 pydantic
 python-multipart
 starlette
-mediapipe
-scikit-learn
-torch --index-url https://download.pytorch.org/whl/cpu
+
+uvloop
+httptools
