@@ -8,4 +8,14 @@ uvloop
 httptools
 starlette
 
+opencv-python-headless
+mediapipe
+
 matplotlib
+attrs
+
+
+scikit-learn
+
+httptools
+starlette
