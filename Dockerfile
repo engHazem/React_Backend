@@ -43,17 +43,13 @@ COPY requirements.txt .
 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# ---- CRITICAL: Install pinned NumPy + ONNXRuntime first ----
+# ---- Install pinned NumPy first (MediaPipe requires <2.0) ----
 RUN pip install --no-cache-dir numpy==1.26.4
+
+# ---- Install ONNX Runtime next ----
 RUN pip install --no-cache-dir onnxruntime==1.18.0
 
-# ---- Install pinned CV/ML libs WITHOUT upgrading NumPy ----
-RUN pip install --no-cache-dir --no-deps \
-    opencv-python-headless==4.9.0.80 \
-    mediapipe==0.10.9 \
-    scikit-learn==1.3.2
-
-# ---- Install the rest from requirements.txt ----
+# ---- Install all remaining dependencies ----
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ============================================================
@@ -62,7 +58,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # ============================================================
-# 6) Expose FastAPI port
+# 6) Expose FastAPI port (Railway auto-injects PORT env)
 # ============================================================
 EXPOSE 8000
 

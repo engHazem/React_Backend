@@ -1,7 +1,29 @@
+# ===============================
+# FAST & LAZY INFERENCE VERSION (Lateral Raises)
+# ===============================
 import cv2
 import numpy as np
-import mediapipe as mp
-import onnxruntime as ort
+import traceback
+
+# NOTE: we intentionally DO NOT import mediapipe or onnxruntime at module import time
+# They are heavy; we import them lazily inside get_pose_model() or when needed.
+
+_pose_model = None
+_mp_pose = None
+
+# ===============================
+# Lazy-load MediaPipe Pose
+# ===============================
+def get_pose_model():
+    global _pose_model, _mp_pose
+    if _pose_model is not None:
+        return _pose_model
+
+    # Lazy import (heavy)
+    import mediapipe as mp
+    _mp_pose = mp.solutions.pose
+    _pose_model = _mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+    return _pose_model
 
 
 # ===============================
@@ -41,7 +63,7 @@ LANDMARK_INDICES = {
 
 
 # ===============================
-# Angle Extraction (unchanged)
+# Angle Extraction (unchanged logic)
 # ===============================
 def extract_angles_from_landmarks(lm):
     left_shoulder = [lm['LEFT_SHOULDER_x'], lm['LEFT_SHOULDER_y']]
@@ -95,17 +117,14 @@ def extract_angles_from_landmarks(lm):
 
 
 # ===============================
-# MediaPipe Pose
-# ===============================
-mp_pose = mp.solutions.pose
-pose = mp_pose.Pose(min_detection_confidence=0.5,
-                    min_tracking_confidence=0.5)
-
-
-# ===============================
-# 🔥 ONNX Analyze Frame
+# ONNX Analyze Frame (lazy pose + same logic)
 # ===============================
 def analyze_frame(frame, session, scaler, threshold, buffer, window_size, num_features, rep_state):
+    try:
+        pose = get_pose_model()  # lazy-load mediapipe pose
+    except Exception as e:
+        # If mediapipe fails, return quickly
+        return {"form_status": f"Pose Load Error: {e}", "rep_state": rep_state}
 
     image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = pose.process(image_rgb)
@@ -122,19 +141,19 @@ def analyze_frame(frame, session, scaler, threshold, buffer, window_size, num_fe
         lm[f"{name}_y"] = p.y
         lm[f"{name}_visibility"] = p.visibility
 
-    # Build feature vector: 42 landmarks
+    # Build feature vector: landmarks then angles
     feature_vector = []
     for name in LANDMARK_NAMES:
         feature_vector.extend([lm[f"{name}_x"], lm[f"{name}_y"], lm[f"{name}_visibility"]])
 
-    # Extract angles
+    # Extract angles and extend
     angles = extract_angles_from_landmarks(lm)
     feature_vector.extend(angles)
 
     # Average shoulder angle for rep logic
-    angle = (angles[0] + angles[1]) / 2
+    angle = (angles[0] + angles[1]) / 2.0 if angles else 0.0
 
-    # Add to buffer
+    # Buffer
     if len(feature_vector) == num_features:
         buffer.append(feature_vector)
     else:
@@ -161,7 +180,6 @@ def analyze_frame(frame, session, scaler, threshold, buffer, window_size, num_fe
     prev_angle = rep_state['prev_angle']
     prev_phase = rep_state['prev_phase']
 
-    # Phase detection
     if angle <= 30 and prev_angle > 30:
         rep_state['Top_ROM_error'] = False
         rep_state['Bottom_ROM_error'] = False
@@ -173,7 +191,6 @@ def analyze_frame(frame, session, scaler, threshold, buffer, window_size, num_fe
     elif angle < prev_angle and 30 < angle < 75:
         rep_state['phase'] = "LR4"
 
-    # ROM Checks
     if prev_phase is not None:
         if rep_state['phase'] == "LR4" and prev_phase == "LR2":
             rep_state['Top_ROM_error'] = True
@@ -183,9 +200,6 @@ def analyze_frame(frame, session, scaler, threshold, buffer, window_size, num_fe
         rep_state['Bottom_ROM_error'] = True
         rep_state['viable_rep'] = False
 
-    # ===============================
-    # COUNT REP ONLY IF GOOD FORM
-    # ===============================
     if prev_phase == "LR4" and rep_state["phase"] == "LR1":
         if rep_state["good_form_flag"]:
             rep_state["rep_counter"] += 1
@@ -196,24 +210,27 @@ def analyze_frame(frame, session, scaler, threshold, buffer, window_size, num_fe
     rep_state['prev_angle'] = angle
 
     # ===============================
-    # 🔥 ONNX INFERENCE
+    # ONNX INFERENCE
     # ===============================
     if len(buffer) >= window_size:
         window = np.array(list(buffer), dtype=np.float32)
 
         try:
             scaled = scaler.transform(window)
-        except:
-            return {"form_status": "Scaler Error", "rep_state": rep_state}
+        except Exception as e:
+            return {"form_status": f"Scaler Error: {e}", "rep_state": rep_state}
 
         onnx_input = scaled[np.newaxis, :, :].astype(np.float32)
 
-        input_name = session.get_inputs()[0].name
-        recon = session.run(None, {input_name: onnx_input})[0]
+        try:
+            input_name = session.get_inputs()[0].name
+            recon = session.run(None, {input_name: onnx_input})[0]
+        except Exception as e:
+            tb = traceback.format_exc()
+            return {"form_status": f"ONNX Run Error: {e}", "trace": tb, "rep_state": rep_state}
 
         err = float(np.mean((onnx_input - recon) ** 2))
 
-        # Form detection (same logic)
         if err > threshold:
             status = "POOR FORM!"
             rep_state["good_form_flag"] = False
@@ -227,8 +244,8 @@ def analyze_frame(frame, session, scaler, threshold, buffer, window_size, num_fe
             rep_state["good_form_flag"] = False
 
         elif angle > 45:
-            if (lm['RIGHT_WRIST_y'] < lm['RIGHT_ELBOW_y'] or
-                lm['LEFT_WRIST_y'] < lm['LEFT_ELBOW_y']):
+            if (lm.get('RIGHT_WRIST_y', 1) < lm.get('RIGHT_ELBOW_y', 1) or
+                lm.get('LEFT_WRIST_y', 1) < lm.get('LEFT_ELBOW_y', 1)):
                 status = "Wrist higher than elbow!"
                 rep_state["good_form_flag"] = False
             else:

@@ -1,7 +1,33 @@
+# ===============================
+# FAST & LAZY INFERENCE VERSION
+# ===============================
 import cv2
 import numpy as np
-import mediapipe as mp
-import onnxruntime as ort
+
+# We DO NOT import mediapipe or onnxruntime here (slow!)
+mp_pose = None
+pose_model = None
+
+
+# ===============================
+# Lazy-load Mediapipe Pose
+# ===============================
+def get_pose_model():
+    global mp_pose, pose_model
+
+    if pose_model is not None:
+        return pose_model
+
+    # Lazy import mediapipe (VERY heavy)
+    import mediapipe as mp
+    mp_pose = mp.solutions.pose
+    pose_model = mp_pose.Pose(
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5
+    )
+
+    return pose_model
+
 
 # ===============================
 # 📐 Helper Functions
@@ -18,14 +44,16 @@ def calculate_angle(a, b, c):
 
 
 # ===============================
-# Landmark Config
+# Landmark Maps
 # ===============================
-LANDMARK_NAMES = [
-    'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
-    'LEFT_WRIST', 'RIGHT_WRIST', 'LEFT_PINKY', 'RIGHT_PINKY',
-    'LEFT_INDEX', 'RIGHT_INDEX', 'LEFT_THUMB', 'RIGHT_THUMB',
-    'LEFT_HIP', 'RIGHT_HIP'
-]
+LANDMARK_INDICES = {
+    'LEFT_SHOULDER': 11, 'RIGHT_SHOULDER': 12, 'LEFT_ELBOW': 13, 'RIGHT_ELBOW': 14,
+    'LEFT_WRIST': 15, 'RIGHT_WRIST': 16,
+    'LEFT_PINKY': 17, 'RIGHT_PINKY': 18,
+    'LEFT_INDEX': 19, 'RIGHT_INDEX': 20,
+    'LEFT_THUMB': 21, 'RIGHT_THUMB': 22,
+    'LEFT_HIP': 23, 'RIGHT_HIP': 24
+}
 
 LEFT_LANDMARKS  = [
     'LEFT_SHOULDER', 'LEFT_ELBOW', 'LEFT_WRIST',
@@ -37,18 +65,9 @@ RIGHT_LANDMARKS = [
     'RIGHT_PINKY', 'RIGHT_INDEX', 'RIGHT_THUMB', 'RIGHT_HIP'
 ]
 
-LANDMARK_INDICES = {
-    'LEFT_SHOULDER': 11, 'RIGHT_SHOULDER': 12, 'LEFT_ELBOW': 13, 'RIGHT_ELBOW': 14,
-    'LEFT_WRIST': 15, 'RIGHT_WRIST': 16,
-    'LEFT_PINKY': 17, 'RIGHT_PINKY': 18,
-    'LEFT_INDEX': 19, 'RIGHT_INDEX': 20,
-    'LEFT_THUMB': 21, 'RIGHT_THUMB': 22,
-    'LEFT_HIP': 23, 'RIGHT_HIP': 24
-}
-
 
 # ===============================
-# Angle Extraction (unchanged)
+# Angle Extraction
 # ===============================
 def extract_angles_from_landmarks(landmarks_dict):
     left_shoulder = [landmarks_dict['LEFT_SHOULDER_x'], landmarks_dict['LEFT_SHOULDER_y']]
@@ -70,8 +89,8 @@ def extract_angles_from_landmarks(landmarks_dict):
 
     if active_arm == "left":
         elbow_flexion = calculate_angle(left_shoulder, left_elbow, left_wrist)
-        torso_angle = calculate_angle(left_hip, left_shoulder, vertical_point_left) if left_hip[0] else 0.0
-        upper_arm_angle = calculate_angle(left_hip, left_shoulder, left_elbow) if left_hip[0] else 0.0
+        torso_angle = calculate_angle(left_hip, left_shoulder, vertical_point_left)
+        upper_arm_angle = calculate_angle(left_hip, left_shoulder, left_elbow)
         left_index = [
             left_wrist[0] + (left_wrist[0] - left_elbow[0]),
             left_wrist[1] + (left_wrist[1] - left_elbow[1])
@@ -81,8 +100,8 @@ def extract_angles_from_landmarks(landmarks_dict):
 
     else:
         elbow_flexion = calculate_angle(right_shoulder, right_elbow, right_wrist)
-        torso_angle = calculate_angle(right_hip, right_shoulder, vertical_point_right) if right_hip[0] else 0.0
-        upper_arm_angle = calculate_angle(right_hip, right_shoulder, right_elbow) if right_hip[0] else 0.0
+        torso_angle = calculate_angle(right_hip, right_shoulder, vertical_point_right)
+        upper_arm_angle = calculate_angle(right_hip, right_shoulder, right_elbow)
         right_index = [
             right_wrist[0] + (right_wrist[0] - right_elbow[0]),
             right_wrist[1] + (right_wrist[1] - right_elbow[1])
@@ -101,20 +120,13 @@ def extract_angles_from_landmarks(landmarks_dict):
 
 
 # ===============================
-# MediaPipe Pose
-# ===============================
-mp_pose = mp.solutions.pose
-pose = mp_pose.Pose(
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5
-)
-
-
-# ===============================
-# 🔥 ONNX VERSION – SAME LOGIC
+# ONNX Inference (FAST VERSION)
 # ===============================
 def analyze_frame(frame, session, scaler, threshold, buffer, window_size, num_features, rep_state):
-    
+
+    # Lazy-load Pose model
+    pose = get_pose_model()
+
     image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = pose.process(image_rgb)
 
@@ -122,7 +134,7 @@ def analyze_frame(frame, session, scaler, threshold, buffer, window_size, num_fe
         buffer.append([0.0] * num_features)
         return {"form_status": "No Pose Detected", "rep_state": rep_state}
 
-    # Extract landmarks
+    # landmarks extraction
     landmarks_dict = {}
     for name, idx in LANDMARK_INDICES.items():
         lm = results.pose_landmarks.landmark[idx]
@@ -130,15 +142,12 @@ def analyze_frame(frame, session, scaler, threshold, buffer, window_size, num_fe
         landmarks_dict[f"{name}_y"] = lm.y
         landmarks_dict[f"{name}_visibility"] = lm.visibility
 
-    # Angles
     angles = extract_angles_from_landmarks(landmarks_dict)
     active_arm = angles[0]
     elbow_flexion_angle = angles[1]
 
-    # Features
     feature_vector = list(angles[1:])  # skip string
 
-    # Add side landmarks
     selection = LEFT_LANDMARKS if active_arm == "left" else RIGHT_LANDMARKS
     for name in selection:
         feature_vector.extend([
@@ -147,16 +156,15 @@ def analyze_frame(frame, session, scaler, threshold, buffer, window_size, num_fe
             landmarks_dict[f"{name}_visibility"]
         ])
 
-    # Buffer
     if len(feature_vector) == num_features:
         buffer.append(feature_vector)
     else:
-        print(f"Warning: Feature mismatch. Expected {num_features}, got {len(feature_vector)}")
         buffer.append([0.0] * num_features)
 
     # =========================
-    # REP LOGIC (UNCHANGED)
+    # REP LOGIC (unchanged)
     # =========================
+
     angle = elbow_flexion_angle
 
     if angle is not None:
@@ -194,10 +202,9 @@ def analyze_frame(frame, session, scaler, threshold, buffer, window_size, num_fe
         rep_state["prev_angle"] = angle
 
     # =========================
-    # ONNX INFERENCE
+    # ONNX Inference
     # =========================
     if len(buffer) >= window_size:
-
         window = np.array(list(buffer), dtype=np.float32)
 
         try:
