@@ -7,3 +7,5 @@ python-multipart
 uvloop
 httptools
 starlette
+
+matplotlib
