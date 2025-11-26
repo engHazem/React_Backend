@@ -30,38 +30,43 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================================
-# 3) Set working directory
+# 3) Working directory
 # ============================================================
 WORKDIR /app
 
-# ============================================================
-# 4) Install Python dependencies
-# ============================================================
+# Copy requirements before installing
 COPY requirements.txt .
 
-# Upgrade pip + build tools
+# ============================================================
+# 4) Install Python dependencies (pinned & conflict-free)
+# ============================================================
+
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# FIX NumPy problem (force version < 2)
-RUN pip install --no-cache-dir "numpy<2"
-
-# Install ONNX Runtime CPU (compatible with numpy<2)
+# ---- CRITICAL: Install pinned NumPy + ONNXRuntime first ----
+RUN pip install --no-cache-dir numpy==1.26.4
 RUN pip install --no-cache-dir onnxruntime==1.18.0
 
-# Install your other dependencies
+# ---- Install pinned CV/ML libs WITHOUT upgrading NumPy ----
+RUN pip install --no-cache-dir --no-deps \
+    opencv-python-headless==4.9.0.80 \
+    mediapipe==0.10.9 \
+    scikit-learn==1.3.2
+
+# ---- Install the rest from requirements.txt ----
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ============================================================
-# 5) Copy application
+# 5) Copy application code
 # ============================================================
 COPY . .
 
 # ============================================================
-# 6) Expose FastAPI port (Railway uses PORT variable)
+# 6) Expose FastAPI port
 # ============================================================
 EXPOSE 8000
 
 # ============================================================
-# 7) Run FastAPI using Uvicorn
+# 7) Run FastAPI using Uvicorn (high-performance)
 # ============================================================
 CMD ["uvicorn", "multimodel_api:app", "--host", "0.0.0.0", "--port", "8000", "--loop", "uvloop", "--http", "httptools"]

@@ -1,11 +1,7 @@
 fastapi
 uvicorn[standard]
 
-opencv-python-headless
-mediapipe
-
 joblib
-scikit-learn
 python-multipart
 
 uvloop
