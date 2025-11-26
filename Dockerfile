@@ -1,9 +1,9 @@
 # ============================================================
-# 1) Base Image — Lightweight Python for fast CPU performance
+# 1) Base Image — Lightweight & Fast for CPU
 # ============================================================
 FROM python:3.10-slim
 
-# Enable optimized math performance
+# Performance optimizations
 ENV OMP_NUM_THREADS=4
 ENV OPENBLAS_NUM_THREADS=4
 ENV MKL_NUM_THREADS=4
@@ -14,29 +14,34 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 # ============================================================
-# 2) Install system dependencies (for cv2, numpy, mediapipe)
+# 2) Install system dependencies (Railway-compatible)
 # ============================================================
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
-    libgl1-mesa-glx \
+    libgl1 \
+    libglx-mesa0 \
+    libgl1-mesa-dri \
     libsm6 \
     libxext6 \
     libxrender1 \
+    libssl-dev \
+    build-essential \
+    cmake \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================================
-# 3) Working directory
+# 3) Set working directory
 # ============================================================
 WORKDIR /app
 
 # ============================================================
-# 4) Install requirements
+# 4) Install Python dependencies
 # ============================================================
 COPY requirements.txt .
 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Force CPU ONNX Runtime (your requirements now contain onnxruntime, not GPU)
+# Force ONNX Runtime CPU (no GPU on Railway)
 RUN pip uninstall -y onnxruntime-gpu || true
 RUN pip install --no-cache-dir onnxruntime==1.18.0
 
@@ -44,16 +49,16 @@ RUN pip install --no-cache-dir onnxruntime==1.18.0
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ============================================================
-# 5) Copy app code
+# 5) Copy application
 # ============================================================
 COPY . .
 
 # ============================================================
-# 6) Expose FastAPI port
+# 6) Expose FastAPI port (Railway uses PORT variable)
 # ============================================================
 EXPOSE 8000
 
 # ============================================================
-# 7) Run FastAPI using uvicorn + uvloop + httptools
+# 7) Run FastAPI using Uvicorn
 # ============================================================
 CMD ["uvicorn", "multimodel_api:app", "--host", "0.0.0.0", "--port", "8000", "--loop", "uvloop", "--http", "httptools"]
