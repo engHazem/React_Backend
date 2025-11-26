@@ -1,0 +1,85 @@
+# ==========================
+# Python
+# ==========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyd
+*.pdb
+*.so
+*.egg-info/
+*.log
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Jupyter files
+.ipynb_checkpoints/
+
+# ==========================
+# OS / Editor-specific
+# ==========================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Git
+.git/
+.gitignore
+
+# ==========================
+# Build / Cache files
+# ==========================
+dist/
+build/
+*.egg
+*.whl
+.cache/
+.mypy_cache/
+.pytest_cache/
+
+# ==========================
+# Node (if frontend exists)
+# ==========================
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# ==========================
+# Docker
+# ==========================
+Dockerfile*
+docker-compose*
+
+# ==========================
+# Data files (OPTIONAL)
+# ==========================
+*.mp4
+*.avi
+*.mov
+*.wav
+*.csv
+*.zip
+*.tar.gz
+
+# ==========================
+# ML Models (OPTIONAL)
+# ==========================
+models/*.pt
+models/*.pth
+models/*.h5
+models/*.tflite
+
+# Keep ONNX files ONLY
+# Uncomment next line if your ONNX models are large
+# models/*.onnx
+
+# ==========================
+# Environment variables
+# ==========================
+.env
+.env.*

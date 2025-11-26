@@ -1,18 +1,24 @@
 fastapi
 uvicorn[standard]
 
-onnxruntime-gpu==1.18.0
+# ONNX Runtime (CPU version — FAST)
+onnxruntime==1.18.0
 
+# CV + Math
 opencv-python-headless
 numpy
 
+# ML utilities
 mediapipe
-
 joblib
 scikit-learn
+
+# File uploads
 python-multipart
 
+# High-performance server extras
 httptools
 uvloop
 
+# ASGI framework
 starlette
