@@ -39,13 +39,16 @@ WORKDIR /app
 # ============================================================
 COPY requirements.txt .
 
+# Upgrade pip + build tools
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Force ONNX Runtime CPU (no GPU on Railway)
-RUN pip uninstall -y onnxruntime-gpu || true
+# FIX NumPy problem (force version < 2)
+RUN pip install --no-cache-dir "numpy<2"
+
+# Install ONNX Runtime CPU (compatible with numpy<2)
 RUN pip install --no-cache-dir onnxruntime==1.18.0
 
-# Install user dependencies
+# Install your other dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ============================================================

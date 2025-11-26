@@ -1,24 +1,13 @@
 fastapi
 uvicorn[standard]
 
-# ONNX Runtime CPU (Fast & Compatible)
-onnxruntime==1.18.0
-
-# CV + Math
 opencv-python-headless
-numpy
-
-# ML utilities
 mediapipe
+
 joblib
 scikit-learn
-
-# File uploads
 python-multipart
 
-# High-performance server extras
 uvloop
 httptools
-
-# ASGI framework (FastAPI dependency)
 starlette
