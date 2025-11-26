@@ -1,85 +1,64 @@
-# ==========================
-# Python
-# ==========================
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.pyd
-*.pdb
-*.so
-*.egg-info/
-*.log
+# ============================================================
+# 1) Base Image — Lightweight & Fast for CPU
+# ============================================================
+FROM python:3.10-slim
 
-# Virtual environment
-venv/
-env/
-.venv/
+# Performance optimizations
+ENV OMP_NUM_THREADS=4
+ENV OPENBLAS_NUM_THREADS=4
+ENV MKL_NUM_THREADS=4
+ENV NUMEXPR_NUM_THREADS=4
 
-# Jupyter files
-.ipynb_checkpoints/
+# Avoid .pyc + enable logs
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
-# ==========================
-# OS / Editor-specific
-# ==========================
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
+# ============================================================
+# 2) Install system dependencies (Railway-compatible)
+# ============================================================
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-0 \
+    libgl1 \
+    libglx-mesa0 \
+    libgl1-mesa-dri \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    libssl-dev \
+    build-essential \
+    cmake \
+    && rm -rf /var/lib/apt/lists/*
 
-# Git
-.git/
-.gitignore
+# ============================================================
+# 3) Set working directory
+# ============================================================
+WORKDIR /app
 
-# ==========================
-# Build / Cache files
-# ==========================
-dist/
-build/
-*.egg
-*.whl
-.cache/
-.mypy_cache/
-.pytest_cache/
+# ============================================================
+# 4) Install Python dependencies
+# ============================================================
+COPY requirements.txt .
 
-# ==========================
-# Node (if frontend exists)
-# ==========================
-node_modules/
-npm-debug.log
-yarn-error.log
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# ==========================
-# Docker
-# ==========================
-Dockerfile*
-docker-compose*
+# Force ONNX Runtime CPU (no GPU on Railway)
+RUN pip uninstall -y onnxruntime-gpu || true
+RUN pip install --no-cache-dir onnxruntime==1.18.0
 
-# ==========================
-# Data files (OPTIONAL)
-# ==========================
-*.mp4
-*.avi
-*.mov
-*.wav
-*.csv
-*.zip
-*.tar.gz
+# Install user dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
-# ==========================
-# ML Models (OPTIONAL)
-# ==========================
-models/*.pt
-models/*.pth
-models/*.h5
-models/*.tflite
+# ============================================================
+# 5) Copy application
+# ============================================================
+COPY . .
 
-# Keep ONNX files ONLY
-# Uncomment next line if your ONNX models are large
-# models/*.onnx
+# ============================================================
+# 6) Expose FastAPI port (Railway uses PORT variable)
+# ============================================================
+EXPOSE 8000
 
-# ==========================
-# Environment variables
-# ==========================
-.env
-.env.*
+# ============================================================
+# 7) Run FastAPI using Uvicorn
+# ============================================================
+CMD ["uvicorn", "multimodel_api:app", "--host", "0.0.0.0", "--port", "8000", "--loop", "uvloop", "--http", "httptools"]

@@ -1,7 +1,7 @@
 fastapi
 uvicorn[standard]
 
-# ONNX Runtime (CPU version — FAST)
+# ONNX Runtime CPU (Fast & Compatible)
 onnxruntime==1.18.0
 
 # CV + Math
@@ -17,8 +17,8 @@ scikit-learn
 python-multipart
 
 # High-performance server extras
-httptools
 uvloop
+httptools
 
-# ASGI framework
+# ASGI framework (FastAPI dependency)
 starlette
