@@ -1,4 +1,4 @@
-# multimodel_api.py  — ONNX + LAZY LOADING + BINARY WS
+# multimodel_api.py  — ONNX + LAZY LOADING + BINARY WS + AUTO GPU
 import base64
 import cv2
 import numpy as np
@@ -6,9 +6,11 @@ import onnxruntime as ort
 import joblib
 import json
 import importlib
+import traceback
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from collections import deque
+from typing import List
 
 app = FastAPI()
 app.add_middleware(
@@ -19,10 +21,42 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DEVICE = "cpu"
-print(f"🔧 Running ONNX Runtime on: {DEVICE}")
+# ---------------------------
+# 🔥 Auto-detect best ONNX provider
+# ---------------------------
+def get_preferred_provider_order() -> List[str]:
 
-# Your model registry — same as before but with "loaded" flag
+    available = ort.get_available_providers()
+    print("🔍 Available ONNX providers:", available)
+
+    order = []
+    # Prefer NVIDIA CUDA
+    if "CUDAExecutionProvider" in available:
+        order.append("CUDAExecutionProvider")
+    # AMD ROCm
+    if "ROCMExecutionProvider" in available:
+        order.append("ROCMExecutionProvider")
+    # Apple CoreML (for Apple Silicon acceleration)
+    if "CoreMLExecutionProvider" in available:
+        order.append("CoreMLExecutionProvider")
+    # TensorRT might be available on some builds
+    if "TensorrtExecutionProvider" in available:
+        order.append("TensorrtExecutionProvider")
+    # Always include CPU as last fallback
+    if "CPUExecutionProvider" in available:
+        order.append("CPUExecutionProvider")
+    else:
+        # Should always exist, but just in case
+        order.append("CPUExecutionProvider")
+
+    return order
+
+PREFERRED_PROVIDERS = get_preferred_provider_order()
+print(f"🧭 Preferred providers order: {PREFERRED_PROVIDERS}")
+
+# ---------------------------
+# Model registry + lazy flags
+# ---------------------------
 EXERCISE_MODELS = {
     "squat": {
         "model_path": "models/squat/squat_model.onnx",
@@ -70,6 +104,39 @@ EXERCISE_MODELS = {
     }
 }
 
+# ---------------------------
+# Helper: create ONNX session with provider fallback
+# ---------------------------
+def create_session_with_fallback(model_path: str, sess_options: ort.SessionOptions = None):
+
+    last_exception = None
+    sess_opts = sess_options if sess_options is not None else ort.SessionOptions()
+
+    for provider in PREFERRED_PROVIDERS:
+        try:
+            # Try to create session with this single provider; let ONNX Runtime decide fallback internally
+            print(f"⏳ Attempting InferenceSession with provider: {provider}")
+            # Use provider list with provider first and CPU as fallback
+            providers_try = [provider, "CPUExecutionProvider"] if provider != "CPUExecutionProvider" else ["CPUExecutionProvider"]
+            session = ort.InferenceSession(model_path, sess_options=sess_opts, providers=providers_try)
+            used_providers = session.get_providers()
+            print(f"✅ Loaded session for {model_path} with providers: {used_providers}")
+            return session, provider
+        except Exception as e:
+            last_exception = e
+            print(f"⚠️ Failed to create session with provider {provider}: {e}")
+            # continue trying next provider
+
+    # If we get here, all attempts failed — raise the last exception
+    print("❌ All provider attempts failed. Raising last exception.")
+    if last_exception is not None:
+        raise last_exception
+    else:
+        raise RuntimeError("Failed to create ONNX Runtime session for unknown reasons.")
+
+# ---------------------------
+# Lazy loader
+# ---------------------------
 def load_model_if_needed(model_name: str):
     cfg = EXERCISE_MODELS[model_name]
     if cfg.get("loaded", False):
@@ -84,24 +151,50 @@ def load_model_if_needed(model_name: str):
         sess_opts = ort.SessionOptions()
         sess_opts.intra_op_num_threads = 2
         sess_opts.inter_op_num_threads = 1
-        sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+        # Use EXTENDED or ALL depending on your ONNX Runtime version
+        try:
+            sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+        except Exception:
+            # In case older/newer API differences
+            pass
 
-        session = ort.InferenceSession(cfg["model_path"], sess_options=sess_opts, providers=["CPUExecutionProvider"])
-        cfg["session"] = session
+        # Create session with provider fallback
+        try:
+            session, used_provider = create_session_with_fallback(cfg["model_path"], sess_options=sess_opts)
+            cfg["session"] = session
+            cfg["used_provider"] = used_provider
+        except Exception as e:
+            # If session creation failed entirely, rethrow / track
+            print(f"❌ Failed to create ONNX session for model '{model_name}': {e}")
+            print(traceback.format_exc())
+            cfg["loaded"] = False
+            return cfg
 
-        scaler = joblib.load(cfg["scaler_path"])
-        cfg["scaler"] = scaler
+        # Load scaler (joblib)
+        try:
+            scaler = joblib.load(cfg["scaler_path"])
+            cfg["scaler"] = scaler
+        except Exception as e:
+            print(f"⚠️ Failed to load scaler for '{model_name}': {e}")
+            cfg["scaler"] = None
 
         cfg["loaded"] = True
-        print(f"✅ Model '{model_name}' loaded!")
+        print(f"✅ Model '{model_name}' loaded (provider: {cfg.get('used_provider')})!")
     except Exception as e:
         print(f"❌ Failed to load model '{model_name}': {e}")
+        print(traceback.format_exc())
     return cfg
 
+# ---------------------------
+# Root endpoint
+# ---------------------------
 @app.get("/")
 async def root():
     return {"message": "Backend running with ONNX + LAZY LOADING + BINARY WS 🚀"}
 
+# ---------------------------
+# WebSocket endpoint (binary frames + json control)
+# ---------------------------
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -128,14 +221,14 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_json({"error": f"Failed to load model '{model_name}' on server"})
             return
 
-        session = model_cfg["session"]
-        scaler = model_cfg["scaler"]
-        threshold = model_cfg["threshold"]
-        analyze_frame = model_cfg["analyze_frame"]
+        session = model_cfg.get("session")
+        scaler = model_cfg.get("scaler")
+        threshold = model_cfg.get("threshold")
+        analyze_frame = model_cfg.get("analyze_frame")
         buffer = deque(maxlen=model_cfg["window_size"])
         rep_state = model_cfg["rep_state"].copy()
 
-        print(f"🎯 USING MODEL: {model_name}")
+        print(f"🎯 USING MODEL: {model_name} (provider: {model_cfg.get('used_provider')})")
 
         # Main loop: accept binary frames or occasional text control messages
         while True:
@@ -154,22 +247,30 @@ async def websocket_endpoint(websocket: WebSocket):
                         await websocket.send_json({"error": "Invalid frame bytes"})
                         continue
 
-                    # Run model inference (you r existing analyze_frame expects session, scaler, threshold, buffer, window_size, num_features, rep_state)
-                    result = analyze_frame(
-                        frame=frame,
-                        session=session,
-                        scaler=scaler,
-                        threshold=threshold,
-                        buffer=buffer,
-                        window_size=model_cfg["window_size"],
-                        num_features=model_cfg["num_features"],
-                        rep_state=rep_state
-                    )
+                    # Run model inference (your existing analyze_frame expects session, scaler, threshold, buffer, window_size, num_features, rep_state)
+                    try:
+                        result = analyze_frame(
+                            frame=frame,
+                            session=session,
+                            scaler=scaler,
+                            threshold=threshold,
+                            buffer=buffer,
+                            window_size=model_cfg["window_size"],
+                            num_features=model_cfg["num_features"],
+                            rep_state=rep_state
+                        )
+                    except Exception as e:
+                        # If model inference fails, send a useful error
+                        tb = traceback.format_exc()
+                        await websocket.send_json({"error": f"Inference error: {str(e)}", "trace": tb})
+                        continue
+
                     # send JSON response
                     await websocket.send_json(result)
 
                 except Exception as e:
-                    await websocket.send_json({"error": f"Processing error: {str(e)}"})
+                    tb = traceback.format_exc()
+                    await websocket.send_json({"error": f"Processing error: {str(e)}", "trace": tb})
 
             elif "text" in msg and msg["text"] is not None:
                 # Control or JSON text (e.g., "reset" or { "command": "reset" })
@@ -195,6 +296,14 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         print("⚠️ WebSocket disconnected")
         websocket_active = False
+
+    except Exception as e:
+        print("❌ Unhandled exception in websocket loop:", e)
+        print(traceback.format_exc())
+        try:
+            await websocket.send_json({"error": "server_error", "detail": str(e)})
+        except:
+            pass
 
     finally:
         if websocket_active:
